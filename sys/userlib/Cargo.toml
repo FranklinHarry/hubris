@@ -26,6 +26,9 @@ unwrap-lite = { path = "../../lib/unwrap-lite" }
 #
 num-derive = { version = "0.3.0", features = [ "full-syntax" ] }
 
+[build-dependencies]
+build-util = {path = "../../build/util"}
+
 [lib]
 test = false
 bench = false
