@@ -14,6 +14,7 @@ ordered-toml = {git = "https://github.com/oxidecomputer/ordered-toml"}
 # for dist
 serde = { version = "1.0.114", features = ["derive"] }
 toml = "0.5.6"
+ron = "0.7"
 indexmap = { version = "1.4.0", features = ["serde-1"] }
 srec = "0.2.0"
 goblin = { version = "0.4.3", features = ["std", "elf32", "endian_fd"] }
