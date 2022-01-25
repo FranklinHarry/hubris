@@ -298,7 +298,10 @@ pub fn package(
         File::create(Path::new(&format!("target/table.ld"))).unwrap();
     }
 
+    let mut task_complaints = BTreeMap::new();
+
     for name in toml.tasks.keys() {
+        let mut complaints = vec![];
         // Implement task name filter. If we're only building a subset of tasks,
         // skip the other ones here.
         if let Some(included_names) = &tasks_to_build {
@@ -308,16 +311,18 @@ pub fn package(
         }
         let task_toml = &toml.tasks[name];
 
-        generate_task_linker_script(
-            "memory.x",
-            &allocs.tasks[name],
-            Some(&task_toml.sections),
+        let stacksize = 
             task_toml.stacksize.or(toml.stacksize).ok_or_else(|| {
                 anyhow!(
                     "{}: no stack size specified and there is no default",
                     name
                 )
-            })?,
+            })?;
+        generate_task_linker_script(
+            "memory.x",
+            &allocs.tasks[name],
+            Some(&task_toml.sections),
+            stacksize,
         )
         .context(format!("failed to generate linker script for {}", name))?;
 
@@ -344,7 +349,7 @@ pub fn package(
 
         resolve_task_slots(name, &toml.tasks, &out.join(name), verbose)?;
 
-        let (ep, flash) = load_elf(&out.join(name), &mut all_output_sections)?;
+        let (ep, (flash, ram)) = load_elf(&out.join(name), &mut all_output_sections)?;
 
         if flash > task_toml.requires["flash"] as usize {
             bail!(
@@ -355,7 +360,28 @@ pub fn package(
             );
         }
 
+        if flash != 0 {
+            if let Some(d) = task_toml.requires["flash"].checked_sub(flash.next_power_of_two() as u32) {
+                if d != 0 {
+                    complaints.push(format!("- {} flash should be {} (-{})",
+                    name, flash.next_power_of_two(), d));
+                }
+            }
+        }
+
+        let ram = ram + stacksize as usize;
+        if ram != 0 {
+            if let Some(d) = task_toml.requires["ram"].checked_sub(ram.next_power_of_two() as u32) {
+                if d != 0 {
+                    complaints.push(format!("- {} ram should be {} (-{})",
+                    name, ram.next_power_of_two(), d));
+                }
+
+            }
+        }
+
         entry_points.insert(name.clone(), ep);
+        task_complaints.insert(name, complaints);
     }
 
     // If we've done a partial build, we can't do the rest because we're missing
@@ -613,6 +639,15 @@ pub fn package(
     }
 
     archive.finish()?;
+
+    if task_complaints.values().any(|v| !v.is_empty()) {
+        println!("--- changes suggested ---");
+        for (task, complaints) in task_complaints {
+            if complaints.is_empty() { continue; }
+            println!("task {}:", task);
+            for c in complaints { println!("{}", c) }
+        }
+    }
 
     Ok(())
 }
@@ -1610,9 +1645,9 @@ fn load_srec(
 fn load_elf(
     input: &Path,
     output: &mut BTreeMap<u32, LoadSegment>,
-) -> Result<(u32, usize)> {
+) -> Result<(u32, (usize, usize))> {
     use goblin::container::Container;
-    use goblin::elf::program_header::PT_LOAD;
+    use goblin::elf::program_header::{PT_LOAD, PF_W};
 
     let file_image = std::fs::read(input)?;
     let elf = goblin::elf::Elf::parse(&file_image)?;
@@ -1625,6 +1660,7 @@ fn load_elf(
     }
 
     let mut flash = 0;
+    let mut ram = 0;
 
     // Good enough.
     for phdr in &elf.program_headers {
@@ -1632,6 +1668,7 @@ fn load_elf(
         if phdr.p_type != PT_LOAD {
             continue;
         }
+        println!("{:?}", phdr);
         let offset = phdr.p_offset as usize;
         let size = phdr.p_filesz as usize;
         // Note that we are using Physical, i.e. LOADADDR, rather than virtual.
@@ -1639,7 +1676,11 @@ fn load_elf(
         // is loaded in flash but expected to be copied to RAM.
         let addr = phdr.p_paddr as u32;
 
-        flash += size;
+        if phdr.p_flags & PF_W != 0 {
+            ram += phdr.p_memsz as usize;
+        } else {
+            flash += size;
+        }
 
         // Check for address overlap
         let range = addr..addr + size as u32;
@@ -1676,7 +1717,7 @@ fn load_elf(
     // Return both our entry and the total allocated flash, allowing the
     // caller to assure that the allocated flash does not exceed the task's
     // required flash
-    Ok((elf.header.e_entry as u32, flash))
+    Ok((elf.header.e_entry as u32, (flash, ram)))
 }
 
 /// Keeps track of a build archive being constructed.
