@@ -134,6 +134,27 @@ pub fn sys_send(
     unsafe { sys_send_stub(&mut args).into() }
 }
 
+#[inline(always)]
+pub fn sys_send2<'r>(
+    target: TaskId,
+    operation: u16,
+    outgoing: &[u8],
+    incoming: &'r mut [u8],
+    leases: &[Lease<'_>],
+) -> (u32, &'r mut [u8]) {
+    let (rc, len) = sys_send(target, operation, outgoing, incoming, leases);
+
+    // Safety: this is unsafe because it could index out of the bounds of
+    // `incoming` and return an invalid slice. However: in general, we have no
+    // choice but to trust the kernel, and the kernel promises that `len <=
+    // incoming.len()`.
+    let reply = unsafe {
+        incoming.get_unchecked_mut(..len)
+    };
+
+    (rc, reply)
+}
+
 #[allow(dead_code)] // this gets used from asm
 #[repr(C)] // field order matters
 struct SendArgs<'a> {
