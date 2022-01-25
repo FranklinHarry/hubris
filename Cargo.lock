@@ -2490,7 +2490,9 @@ name = "task-jefe"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "build-util",
  "cortex-m",
+ "cortex-m-semihosting",
  "hubris-num-tasks",
  "num-traits",
  "ringbuf",
@@ -2541,6 +2543,7 @@ dependencies = [
 name = "task-ping"
 version = "0.1.0"
 dependencies = [
+ "build-util",
  "cortex-m",
  "drv-user-leds-api",
  "userlib",
