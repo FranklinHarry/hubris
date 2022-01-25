@@ -389,92 +389,7 @@ pub fn reinitialize(task: &mut task::Task) {
     task.save_mut().exc_return = EXC_RETURN_CONST;
 }
 
-#[cfg(armv6m)]
-pub fn apply_memory_protection(task: &task::Task) {
-    // We are manufacturing authority to interact with the MPU here, because we
-    // can't thread a cortex-specific peripheral through an
-    // architecture-independent API. This approach might bear revisiting later.
-    let mpu = unsafe {
-        // At least by not taking a &mut we're confident we're not violating
-        // aliasing....
-        &*cortex_m::peripheral::MPU::ptr()
-    };
-
-    for (i, region) in task.region_table().iter().enumerate() {
-        let rbar = (i as u32)  // region number
-            | (1 << 4)  // honor the region number
-            | region.base;
-        let ratts = region.attributes;
-        let xn = !ratts.contains(app::RegionAttributes::EXECUTE);
-        // These AP encodings are chosen such that we never deny *privileged*
-        // code (i.e. us) access to the memory.
-        let ap = if ratts.contains(app::RegionAttributes::WRITE) {
-            0b011
-        } else if ratts.contains(app::RegionAttributes::READ) {
-            0b010
-        } else {
-            0b001
-        };
-        // Set the SCB bits to configure memory type and shareability (with
-        // other cores or masters). See table 36 in PM0223.
-        let scb = if ratts.contains(app::RegionAttributes::DEVICE) {
-            // Device memory.
-            0b001
-        } else if ratts.contains(app::RegionAttributes::DMA) {
-            // Conservative settings for normal memory assuming that DMA might
-            // be a problem:
-            // - Strongly-ordered
-            // - Shared.
-            0b000
-        } else {
-            // Aggressive settings for normal memory assume that it is used only
-            // by this processor:
-            // - Outer and inner write-back
-            // - No write allocate.
-            // - Not shared.
-            0b011
-        };
-        // On v6-M the MPU expresses size of a region in log2 form _minus one._
-        // So, the minimum allowed size of 32 bytes is represented as 4, because
-        // `2**(4 + 1) == 32`.
-        //
-        // We store sizes in the region table in an architecture-independent
-        // form (number of bytes) because it simplifies basically everything
-        // else but this routine. Here we must convert between the two -- and
-        // quickly, because this is called on every context switch.
-        //
-        // The image-generation tools check at build time that region sizes are
-        // powers of two. So, we can assume that the size has a single 1 bit. We
-        // can cheaply compute log2 of this by counting trailing zeroes, but
-        // ARMv6-M doesn't have a native instruction for that -- only leading
-        // zeroes. The equivalent using leading zeroes is
-        //
-        //   log2(N) = bits_in_word - 1 - clz(N)
-        //
-        // Because we want log2 _minus one_ we compute it as...
-        //
-        //   log2_m1(N) = bits_in_word - 2 - clz(N)
-        //
-        // If the size is zero or one, this subtraction will underflow. This
-        // should not occur in a valid image, but could occur due to runtime
-        // flash corruption. Any region size under 32 bytes is illegal on
-        // ARMv6-M anyway, so panicking is better than triggering possibly
-        // undefined hardware behavior.
-        let l2size = 30 - region.size.leading_zeros();
-
-        let rasr = (xn as u32) << 28
-            | ap << 24
-            | scb << 16
-            | l2size << 1
-            | (1 << 0); // enable
-        unsafe {
-            mpu.rbar.write(rbar);
-            mpu.rasr.write(rasr);
-        }
-    }
-}
-
-#[cfg(armv7m)]
+#[cfg(any(armv6m, armv7m))]
 pub fn apply_memory_protection(task: &task::Task) {
     // We are manufacturing authority to interact with the MPU here, because we
     // can't thread a cortex-specific peripheral through an
@@ -502,7 +417,8 @@ pub fn apply_memory_protection(task: &task::Task) {
         };
         // Set the TEX/SCB bits to configure memory type, caching policy, and
         // shareability (with other cores or masters). See table B3-13 in the
-        // ARMv7-M ARM.
+        // ARMv7-M ARM. (Settings are identical on v6-M but the sharability and
+        // TEX bits tend to be ignored.)
         let (tex, scb) = if ratts.contains(app::RegionAttributes::DEVICE) {
             // Device memory.
             (0b000, 0b001)
@@ -520,9 +436,9 @@ pub fn apply_memory_protection(task: &task::Task) {
             // - Not shared.
             (0b001, 0b011)
         };
-        // On v7-M the MPU expresses size of a region in log2 form _minus one._
-        // So, the minimum allowed size of 32 bytes is represented as 4, because
-        // `2**(4 + 1) == 32`.
+        // On v6/7-M the MPU expresses size of a region in log2 form _minus
+        // one._ So, the minimum allowed size of 32 bytes is represented as 4,
+        // because `2**(4 + 1) == 32`.
         //
         // We store sizes in the region table in an architecture-independent
         // form (number of bytes) because it simplifies basically everything
@@ -546,6 +462,10 @@ pub fn apply_memory_protection(task: &task::Task) {
         // flash corruption. Any region size under 32 bytes is illegal on
         // ARMv7-M anyway, so panicking is better than triggering possibly
         // undefined hardware behavior.
+        //
+        // On ARMv6-M, there is no CLZ instruction either. This winds up
+        // generating decent intrinsic code for `leading_zeros` so we'll live
+        // with it.
         let l2size = 30 - region.size.leading_zeros();
 
         let rasr = (xn as u32) << 28
@@ -676,80 +596,97 @@ pub fn start_first_task(tick_divisor: u32, task: &task::Task) -> ! {
     // anything. But these operations are `unsafe` in the `cortex_m` crate.
     unsafe {
         let scb = &*cortex_m::peripheral::SCB::ptr();
-        // Faults on.
+        // Faults on, on the processors that distinguish faults. This
+        // distinguishes the following faults from HardFault:
         //
-        // This enables MEMFAULT, BUSFAULT, USGFAULT, SECUREFAULT (ARMv8m)
-        #[cfg(armv7m)]
-        {
-            scb.shcsr.modify(|x| x | 0b111 << 16);
-        }
-        #[cfg(armv8m)]
-        {
-            scb.shcsr.modify(|x| x | 0b1111 << 16);
-        }
-        #[cfg(armv6m)]
-        {
-            // ARMv6 only has 4 priority levels.  Set priorities of SVCall,
-            // SysTick and PendSV to 3 (the lowest configurable).
-            scb.shpr[0].modify(|x| x | 0b11 << 30);
-            scb.shpr[1].modify(|x| x | 0b11 << 22 | 0b11 << 30);
-        }
-        #[cfg(any(armv7m, armv8m))]
-        {
-            // Set priority of Usage, Bus, MemManage to 0 (highest configurable).
-            scb.shpr[0].write(0x00);
-            scb.shpr[1].write(0x00);
-            scb.shpr[2].write(0x00);
-            // Set priority of SVCall to 0xFF (lowest configurable).
-            scb.shpr[7].write(0xFF);
-            // SysTick and PendSV also to 0xFF
-            scb.shpr[10].write(0xFF);
-            scb.shpr[11].write(0xFF);
+        // - ARMv7+: MEMFAULT, BUSFAULT, USGFAULT
+        // - ARMv8: SECUREFAULT
+        cfg_if::cfg_if! {
+            if #[cfg(armv7m)] {
+                scb.shcsr.modify(|x| x | 0b111 << 16);
+            } else if #[cfg(armv8m)] {
+                scb.shcsr.modify(|x| x | 0b1111 << 16);
+            } else if #[cfg(armv6m)] {
+                // This facility is missing.
+            } else {
+                compile_error!("missing fault setup for ARM profile");
+            }
         }
 
-        // ARM's default disposition is that division by zero doesn't actually
-        // fail, but rather returns 0. (!)  It's unclear how placating this
-        // kind of programmatic sloppiness doesn't ultimately end in tears;
-        // we explicitly configure ourselves to trap on any divide by zero.
+        // Set fault and standard exception priorities.
+        cfg_if::cfg_if! {
+            if #[cfg(armv6m)] {
+                // ARMv6 only has 4 priority levels and no configurable fault
+                // priorities. Set priorities of SVCall, SysTick and PendSV to 3
+                // (the lowest configurable).
+                scb.shpr[0].modify(|x| x | 0b11 << 30);
+                scb.shpr[1].modify(|x| x | 0b11 << 22 | 0b11 << 30);
+            } else if #[cfg(any(armv7m, armv8m))] {
+                // Set priority of Usage, Bus, MemManage to 0 (highest
+                // configurable).
+                scb.shpr[0].write(0x00);
+                scb.shpr[1].write(0x00);
+                scb.shpr[2].write(0x00);
+                // Set priority of SVCall to 0xFF (lowest configurable).
+                scb.shpr[7].write(0xFF);
+                // SysTick and PendSV also to 0xFF
+                scb.shpr[10].write(0xFF);
+                scb.shpr[11].write(0xFF);
+            } else {
+                compile_error!("missing fault priorities for ARM profile");
+            }
+        }
+
         #[cfg(any(armv7m, armv8m))]
         {
+            // ARM's default disposition is that division by zero doesn't
+            // actually fail, but rather returns 0. (!)  It's unclear how
+            // placating this kind of programmatic sloppiness doesn't ultimately
+            // end in tears; we explicitly configure ourselves to trap on any
+            // divide by zero.
             const DIV_0_TRP: u32 = 1 << 4;
             scb.ccr.modify(|x| x | DIV_0_TRP);
         }
 
-        // Now, force all external interrupts to 0xFF too, so they can't preempt
-        // the kernel.
+        // Configure the priority of all external interrupts so that they can't
+        // preempt the kernel.
         let nvic = &*cortex_m::peripheral::NVIC::ptr();
 
-        // On ARMv6 there are 8 IPR registers, each containing 4 interrupt
-        // priorities.  Only 2 bits, stored at bits[7:6], are used for the
-        // priority level, giving a range of 0-192 in steps of 64.  Writes to
-        // the other bits are ignored, so we just set everything high, i.e.
-        // the lowest priority.  For more information see:
-        //
-        //      PM0223 4.2.6 Interrupt Priority Registers.
-        //
-        #[cfg(armv6m)]
-        {
-            for i in 0..8 {
-                nvic.ipr[i].write(0xFFFF_FFFF);
-            }
-        }
-
-        // How many IRQs have we got on ARMv7+? This information is stored in a
-        // separate area of the address space, away from the NVIC, and is
-        // (presumably due to an oversight) not present in the cortex_m API, so
-        // let's fake it.
-        #[cfg(any(armv7m, armv8m))]
-        {
-            let ictr = (0xe000_e004 as *const u32).read_volatile();
-            // This gives interrupt count in blocks of 32, minus 1, so there are
-            // always at least 32 interrupts.
-            let irq_block_count = (ictr as usize & 0xF) + 1;
-            let irq_count = irq_block_count * 32;
-            // Blindly poke all the interrupts to 0xFF.
-            for i in 0..irq_count {
-                nvic.ipr[i].write(0xFF);
+        cfg_if::cfg_if! {
+            if #[cfg(armv6m)] {
+                // On ARMv6 there are 8 IPR registers, each containing 4
+                // interrupt priorities.  Only 2 bits, stored at bits[7:6], are
+                // used for the priority level, giving a range of 0-192 in steps
+                // of 64.  Writes to the other bits are ignored, so we just set
+                // everything high, i.e.  the lowest priority.  For more
+                // information see:
+                //
+                // ARMv6-M Architecture Reference Manual section B3.4.7
+                //
+                // Do not believe what the docs for the `cortex_m` crate suggest
+                // -- the IPR registers on ARMv6M are 32-bits wide.
+                for i in 0..8 {
+                    nvic.ipr[i].write(0xFFFF_FFFF);
+                }
+            } else if #[cfg(any(armv7m, armv8m))] {
+                // How many IRQs have we got on ARMv7+? This information is
+                // stored in a separate area of the address space, away from the
+                // NVIC, and is (presumably due to an oversight) not present in
+                // the cortex_m API, so let's fake it.
+                let ictr = (0xe000_e004 as *const u32).read_volatile();
+                // This gives interrupt count in blocks of 32, minus 1, so there
+                // are always at least 32 interrupts.
+                let irq_block_count = (ictr as usize & 0xF) + 1;
+                let irq_count = irq_block_count * 32;
+                // Blindly poke all the interrupts to 0xFF. IPR registers on
+                // ARMv7/8 are modeled as `u8` by `cortex_m`, unlike on ARMv6.
+                // We're explicit with the `u8` suffix below to ensure that we
+                // notice if this changes.
+                for i in 0..irq_count {
+                    nvic.ipr[i].write(0xFFu8);
+                }
+            } else {
+                compile_error!("missing IRQ priorities for ARM profile");
             }
         }
     }
@@ -811,37 +748,53 @@ pub fn start_first_task(tick_divisor: u32, task: &task::Task) -> ! {
         cortex_m::register::psp::write(task.save().psp);
     }
 
-    #[cfg(armv6m)]
-    unsafe {
-        asm!("
-            @ restore the callee-save registers
-            ldm {task}!, {{r4-r7}}
-            push {{r4-r7}}
-            ldm {task}!, {{r4-r7}}
-            mov r11, r7
-            mov r10, r6
-            mov r9, r5
-            mov r8, r4
-            pop {{r4-r7}}
-            @ restore {task} address
-            subs {task}, {task}, #(8 * 4)
-            svc #0xFF                 @ branch into user mode (svc # ignored)
-            udf #0xad                 @ should not return
-            ",
-            task = in(reg) &task.save().r4,
-            options(noreturn),
-        )
-    }
-    #[cfg(any(armv7m, armv8m))]
-    unsafe {
-        asm!("
-            ldm {task}, {{r4-r11}}    @ restore the callee-save registers
-            svc #0xFF                 @ branch into user mode (svc # ignored)
-            udf #0xad                 @ should not return
-            ",
-            task = in(reg) &task.save().r4,
-            options(noreturn),
-        )
+    // Run the final pre-kernel assembly sequence to set up the kernel
+    // environment!
+    //
+    // Our basic goal here is to flip into Handler mode (i.e. interrupt state)
+    // so that we can switch Thread mode (not-interrupt state) to unprivileged
+    // and running off the Process Stack Pointer. The easiest way to do this on
+    // ARM-M is by entering Handler mode by a trap. We use SVC, which we also
+    // use for system calls; the SVC entry sequence (also in this file) has code
+    // to detect this condition and do kernel startup rather than processing it
+    // as a syscall.
+    cfg_if::cfg_if! {
+        if #[cfg(armv6m)] {
+            unsafe {
+                asm!("
+                    @ restore the callee-save registers
+                    ldm {task}!, {{r4-r7}}
+                    push {{r4-r7}}
+                    ldm {task}!, {{r4-r7}}
+                    mov r11, r7
+                    mov r10, r6
+                    mov r9, r5
+                    mov r8, r4
+                    pop {{r4-r7}}
+                    @ Trap into the kernel.
+                    svc #0xFF
+                    @ noreturn generates a UDF here in case that should return.
+                    ",
+                    task = in(reg) &task.save().r4,
+                    options(noreturn),
+                )
+            }
+        } else if #[cfg(any(armv7m, armv8m))] {
+            unsafe {
+                asm!("
+                    @ Restore callee-save registers.
+                    ldm {task}, {{r4-r11}}
+                    @ Trap into the kernel.
+                    svc #0xFF
+                    @ noreturn generates a UDF here in case that should return.
+                    ",
+                    task = in(reg) &task.save().r4,
+                    options(noreturn),
+                )
+            }
+        } else {
+            compile_error!("missing kernel bootstrap sequence for ARM profile");
+        }
     }
 }
 
@@ -856,139 +809,156 @@ pub unsafe extern "C" fn SVCall() {
     // of instructions below, though the precise details depend on how complex
     // of an M-series processor you're targeting -- so I've punted on this for
     // the time being.
-    asm!("
-        mov r0, lr
-        ldr r1, =0xFFFFFFF3     @ mask to get mode and SPSEL from EXC_RETURN
-        bics r0, r0, r1
-        cmp r0, #0x8            @ Checking for thread mode and main stack
-                                @ to see if we're coming from inside the kernel
-        beq 1f                  @ if so, we're starting the first task;
-                                @ jump ahead.
-        @ the common case is handled by branch-not-taken as it's faster
 
-        @ store volatile state.
-        @ first, get a pointer to the current task.
-        ldr r0, =CURRENT_TASK_PTR
-        ldr r1, [r0]
-        @ fetch the process-mode stack pointer.
-        @ fetching into r12 means the order in the stm below is right.
-        mrs r12, PSP
-        @ now, store volatile registers, plus the PSP in r12, plus LR.
-        stm r1!, {{r4-r7}}
-        mov r4, r8
-        mov r5, r9
-        mov r6, r10
-        mov r7, r11
-        stm r1!, {{r4-r7}}
-        mov r4, r12
-        mov r5, lr
-        stm r1!, {{r4, r5}}
+    // All the syscall handlers use the same strategy, but the implementation
+    // differs on different profile variants.
+    //
+    // First, we inspect LR, which on exception entry contains bits describing
+    // the _previous_ (interrupted) processor state. We can use this to detect
+    // if the SVC came from the Main (interrupt) stack. This only happens once,
+    // during startup, so we vector to a different routine in this case.
+    //
+    // We then store the calling task's context into the TCB.
+    //
+    // Then, we call into `syscall_entry`.
+    //
+    // After that, we repeat the same steps in the opposite order to restore
+    // task context (possibly for a different task!).
+    cfg_if::cfg_if! {
+        if #[cfg(armv6m)] {
+            asm!("
+                @ Inspect LR to figure out the caller's mode.
+                mov r0, lr
+                ldr r1, =0xFFFFFFF3
+                bics r0, r0, r1
+                @ Is the call coming from thread mode + main stack, i.e.
+                @ from the kernel startup routine?
+                cmp r0, #0x8
+                @ If so, this is startup; jump ahead. The common case falls
+                @ through because branch-not-taken tends to be faster on small
+                @ cores.
+                beq 1f
 
-        @ syscall number is passed in r11. Move it into r0 to pass it as an
-        @ argument to the handler, then call the handler.
-        mov r0, r11
-        bl syscall_entry
+                @ store volatile state.
+                @ first, get a pointer to the current task.
+                ldr r0, =CURRENT_TASK_PTR
+                ldr r1, [r0]
+                @ now, store volatile registers, plus the PSP, plus LR.
+                stm r1!, {{r4-r7}}
+                mov r4, r8
+                mov r5, r9
+                mov r6, r10
+                mov r7, r11
+                stm r1!, {{r4-r7}}
+                mrs r4, PSP
+                mov r5, lr
+                stm r1!, {{r4, r5}}
 
-        @ we're returning back to *some* task, maybe not the same one.
-        ldr r0, =CURRENT_TASK_PTR
-        ldr r0, [r0]
-        @ restore volatile registers, plus load PSP into r12
-        ldm r0!, {{r4-r7}}
-        push {{r4-r7}}
-        ldm r0!, {{r4-r7}}
-        push {{r4-r7}}
-        ldm r0!, {{r4, r5}}
-        mov lr, r5
-        mov r12, r4
-        pop {{r4-r7}}
-        mov r11, r7
-        mov r10, r6
-        mov r9, r5
-        mov r8, r4
-        pop {{r4-r7}}
-        msr PSP, r12
+                @ syscall number is passed in r11. Move it into r0 to pass
+                @ it as an argument to the handler, then call the handler.
+                mov r0, r11
+                bl syscall_entry
 
-        @ resume
-        bx lr
+                @ we're returning back to *some* task, maybe not the same one.
+                ldr r0, =CURRENT_TASK_PTR
+                ldr r0, [r0]
+                @ restore volatile registers, plus PSP. We will do this in
+                @ slightly reversed order for efficiency. First, do the high
+                @ ones.
+                movs r1, r0
+                adds r1, r1, #(4 * 4)
+                ldm r1!, {{r4-r7}}
+                mov r11, r7
+                mov r10, r6
+                mov r9, r5
+                mov r8, r4
+                ldm r1!, {{r4, r5}}
+                msr PSP, r4
+                mov lr, r5
 
-    1:  @ starting up the first task.
-        movs r0, #1             @ get bitmask to...
-        msr CONTROL, r0         @ ...shed privs from thread mode.
-                                @ note: now barrier here because exc return
-                                @ serves as barrier
+                @ Now that we no longer need r4-r7 as temporary registers,
+                @ restore them too.
+                ldm r0!, {{r4-r7}}
 
-        ldr r0, ={exc_return}   @ materialize EXC_RETURN value to
-                                @ return into thread mode, PSP, FP on
-        mov lr, r0
-        bx lr                   @ branch into user mode
-        ",
-        exc_return = const EXC_RETURN_CONST as u32,
-        options(noreturn),
-    )
-}
+                @ resume
+                bx lr
 
-#[allow(non_snake_case)]
-#[naked]
-#[no_mangle]
-#[cfg(any(armv7m, armv8m))]
-pub unsafe extern "C" fn SVCall() {
-    // TODO: could shave several cycles off SVC entry with more careful ordering
-    // of instructions below, though the precise details depend on how complex
-    // of an M-series processor you're targeting -- so I've punted on this for
-    // the time being.
-    asm!("
-        mov r0, lr
-        mov r1, #0xFFFFFFF3     @ mask to get mode and SPSEL from EXC_RETURN
-        bic r0, r1
-        cmp r0, #0x8            @ Checking for thread mode and main stack
-                                @ to see if we're coming from inside the kernel
-        beq 1f                  @ if so, we're starting the first task;
-                                @ jump ahead.
-        @ the common case is handled by branch-not-taken as it's faster
+            1:  @ starting up the first task.
+                @ Drop privilege in Thread mode.
+                movs r0, #1
+                msr CONTROL, r0
+                @ note: no barrier here because exc return serves as barrier
 
-        @ store volatile state.
-        @ first, get a pointer to the current task.
-        movw r0, #:lower16:CURRENT_TASK_PTR
-        movt r0, #:upper16:CURRENT_TASK_PTR
-        ldr r1, [r0]
-        @ fetch the process-mode stack pointer.
-        @ fetching into r12 means the order in the stm below is right.
-        mrs r12, PSP
-        @ now, store volatile registers, plus the PSP in r12, plus LR.
-        stm r1!, {{r4-r12, lr}}
-        vstm r1, {{s16-s31}}
+                @ Manufacture a new EXC_RETURN to change the processor mode
+                @ when we return.
+                ldr r0, ={exc_return}
+                mov lr, r0
+                bx lr                   @ branch into user mode
+                ",
+                exc_return = const EXC_RETURN_CONST as u32,
+                options(noreturn),
+            )
+        } else if #[cfg(any(armv7m, armv8m))] {
+            asm!("
+                @ Inspect LR to figure out the caller's mode.
+                mov r0, lr
+                mov r1, #0xFFFFFFF3
+                bic r0, r1
+                @ Is the call coming from thread mode + main stack, i.e.
+                @ from the kernel startup routine?
+                cmp r0, #0x8
+                @ If so, this is startup; jump ahead. The common case falls
+                @ through because branch-not-taken tends to be faster on small
+                @ cores.
+                beq 1f
 
-        @ syscall number is passed in r11. Move it into r0 to pass it as an
-        @ argument to the handler, then call the handler.
-        movs r0, r11
-        bl syscall_entry
+                @ store volatile state.
+                @ first, get a pointer to the current task.
+                movw r0, #:lower16:CURRENT_TASK_PTR
+                movt r0, #:upper16:CURRENT_TASK_PTR
+                ldr r1, [r0]
+                @ fetch the process-mode stack pointer.
+                @ fetching into r12 means the order in the stm below is right.
+                mrs r12, PSP
+                @ now, store volatile registers, plus the PSP in r12, plus LR.
+                stm r1!, {{r4-r12, lr}}
+                vstm r1, {{s16-s31}}
 
-        @ we're returning back to *some* task, maybe not the same one.
-        movw r0, #:lower16:CURRENT_TASK_PTR
-        movt r0, #:upper16:CURRENT_TASK_PTR
-        ldr r0, [r0]
-        @ restore volatile registers, plus load PSP into r12
-        ldm r0!, {{r4-r12, lr}}
-        vldm r0, {{s16-s31}}
-        msr PSP, r12
+                @ syscall number is passed in r11. Move it into r0 to pass it as
+                @ an argument to the handler, then call the handler.
+                movs r0, r11
+                bl syscall_entry
 
-        @ resume
-        bx lr
+                @ we're returning back to *some* task, maybe not the same one.
+                movw r0, #:lower16:CURRENT_TASK_PTR
+                movt r0, #:upper16:CURRENT_TASK_PTR
+                ldr r0, [r0]
+                @ restore volatile registers, plus load PSP into r12
+                ldm r0!, {{r4-r12, lr}}
+                vldm r0, {{s16-s31}}
+                msr PSP, r12
 
-    1:  @ starting up the first task.
-        movs r0, #1             @ get bitmask to...
-        msr CONTROL, r0         @ ...shed privs from thread mode.
-                                @ note: now barrier here because exc return
-                                @ serves as barrier
+                @ resume
+                bx lr
 
-        mov lr, {exc_return}    @ materialize EXC_RETURN value to
-                                @ return into thread mode, PSP, FP on
+            1:  @ starting up the first task.
+                movs r0, #1         @ get bitmask to...
+                msr CONTROL, r0     @ ...shed privs from thread mode.
+                                    @ note: now barrier here because exc return
+                                    @ serves as barrier
 
-        bx lr                   @ branch into user mode
-        ",
-        exc_return = const EXC_RETURN_CONST as u32,
-        options(noreturn),
-    )
+                mov lr, {exc_return}    @ materialize EXC_RETURN value to
+                                        @ return into thread mode, PSP, FP on
+
+                bx lr                   @ branch into user mode
+                ",
+                exc_return = const EXC_RETURN_CONST as u32,
+                options(noreturn),
+            )
+        } else {
+            compile_error!("missing SVCall impl for ARM profile.");
+        }
+    }
 }
 
 /// Manufacture a mutable/exclusive reference to the task table from thin air
@@ -1102,97 +1072,88 @@ fn pend_context_switch_from_isr() {
 #[no_mangle]
 #[cfg(armv6m)]
 pub unsafe extern "C" fn PendSV() {
-    asm!(
-        "
-        @ store volatile state.
-        @ first, get a pointer to the current task.
-        ldr r0, =CURRENT_TASK_PTR
-        ldr r1, [r0]
-        @ fetch the process-mode stack pointer.
-        @ fetching into r12 means the order in the stm below is right.
-        mrs r12, PSP
-        @ now, store volatile registers, plus the PSP in r12, plus LR.
-        stm r1!, {{r4-r7}}
-        mov r4, r8
-        mov r5, r9
-        mov r6, r10
-        mov r7, r11
-        stm r1!, {{r4-r7}}
-        mov r4, r12
-        mov r5, lr
-        stm r1!, {{r4, r5}}
+    cfg_if::cfg_if! {
+        if #[cfg(armv6m)] {
+            asm!(
+                "
+                @ store volatile state.
+                @ first, get a pointer to the current task.
+                ldr r0, =CURRENT_TASK_PTR
+                ldr r1, [r0]
+                @ now, store volatile registers, plus the PSP, plus LR.
+                stm r1!, {{r4-r7}}
+                mov r4, r8
+                mov r5, r9
+                mov r6, r10
+                mov r7, r11
+                stm r1!, {{r4-r7}}
+                mrs r4, PSP
+                mov r5, lr
+                stm r1!, {{r4, r5}}
 
-        @ syscall number is passed in r11. Move it into r0 to pass it as an
-        @ argument to the handler, then call the handler.
-        bl pendsv_entry
+                bl pendsv_entry
 
-        @ we're returning back to *some* task, maybe not the same one.
-        ldr r0, =CURRENT_TASK_PTR
-        ldr r0, [r0]
-        @ restore volatile registers, plus load PSP into r12
-        ldm r0!, {{r4-r7}}
-        push {{r4-r7}}
+                @ we're returning back to *some* task, maybe not the same one.
+                ldr r0, =CURRENT_TASK_PTR
+                ldr r0, [r0]
+                @ restore volatile registers, plus PSP. We will do this in
+                @ slightly reversed order for efficiency. First, do the high
+                @ ones.
+                movs r1, r0
+                adds r1, r1, #(4 * 4)
+                ldm r1!, {{r4-r7}}
+                mov r11, r7
+                mov r10, r6
+                mov r9, r5
+                mov r8, r4
+                ldm r1!, {{r4, r5}}
+                msr PSP, r4
+                mov lr, r5
 
-        ldm r0!, {{r4-r7}}
-        push {{r4-r7}}
+                @ Now that we no longer need r4-r7 as temporary registers,
+                @ restore them too.
+                ldm r0!, {{r4-r7}}
 
-        ldm r0!, {{r4, r5}}
-        mov lr, r5
-        mov r12, r4
+                @ resume
+                bx lr
+                ",
+                options(noreturn),
+            );
+        } else if #[cfg(any(armv7m, armv8m))] {
+            asm!(
+                "
+                @ store volatile state.
+                @ first, get a pointer to the current task.
+                movw r0, #:lower16:CURRENT_TASK_PTR
+                movt r0, #:upper16:CURRENT_TASK_PTR
+                ldr r1, [r0]
+                @ fetch the process-mode stack pointer.
+                @ fetching into r12 means the order in the stm below is right.
+                mrs r12, PSP
+                @ now, store volatile registers, plus the PSP in r12, plus LR.
+                stm r1!, {{r4-r12, lr}}
+                vstm r1, {{s16-s31}}
 
-        pop {{r4-r7}}
-        mov r11, r7
-        mov r10, r6
-        mov r9, r5
-        mov r8, r4
-        pop {{r4-r7}}
+                bl pendsv_entry
 
-        msr PSP, r12
+                @ we're returning back to *some* task, maybe not the same one.
+                movw r0, #:lower16:CURRENT_TASK_PTR
+                movt r0, #:upper16:CURRENT_TASK_PTR
+                ldr r0, [r0]
+                @ restore volatile registers, plus load PSP into r12
+                ldm r0!, {{r4-r12, lr}}
+                vldm r0, {{s16-s31}}
+                msr PSP, r12
 
-        @ resume
-        bx lr
-        ",
-        options(noreturn),
-    );
-}
-
-#[allow(non_snake_case)]
-#[naked]
-#[no_mangle]
-#[cfg(any(armv7m, armv8m))]
-pub unsafe extern "C" fn PendSV() {
-    asm!(
-        "
-        @ store volatile state.
-        @ first, get a pointer to the current task.
-        movw r0, #:lower16:CURRENT_TASK_PTR
-        movt r0, #:upper16:CURRENT_TASK_PTR
-        ldr r1, [r0]
-        @ fetch the process-mode stack pointer.
-        @ fetching into r12 means the order in the stm below is right.
-        mrs r12, PSP
-        @ now, store volatile registers, plus the PSP in r12, plus LR.
-        stm r1!, {{r4-r12, lr}}
-        vstm r1, {{s16-s31}}
-
-        @ syscall number is passed in r11. Move it into r0 to pass it as an
-        @ argument to the handler, then call the handler.
-        bl pendsv_entry
-
-        @ we're returning back to *some* task, maybe not the same one.
-        movw r0, #:lower16:CURRENT_TASK_PTR
-        movt r0, #:upper16:CURRENT_TASK_PTR
-        ldr r0, [r0]
-        @ restore volatile registers, plus load PSP into r12
-        ldm r0!, {{r4-r12, lr}}
-        vldm r0, {{s16-s31}}
-        msr PSP, r12
-
-        @ resume
-        bx lr
-        ",
-        options(noreturn),
-    );
+                @ resume
+                bx lr
+                ",
+                options(noreturn),
+            );
+        } else {
+            compile_error!("missing PendSV impl for ARM profile.");
+        }
+    }
 }
 
 /// The Rust side of the PendSV handler, after all volatile registers have been
@@ -1302,94 +1263,11 @@ pub fn enable_irq(n: u32) {
 
 #[repr(u8)]
 #[allow(dead_code)]
-#[cfg(armv6m)]
-enum FaultType {
-    HardFault = 3,
-}
-
-#[repr(u8)]
-#[allow(dead_code)]
-#[cfg(any(armv7m, armv8m))]
+    #[cfg(any(armv7m, armv8m))]
 enum FaultType {
     MemoryManagement = 4,
     BusFault = 5,
     UsageFault = 6,
-}
-
-#[naked]
-#[cfg(armv6m)]
-unsafe extern "C" fn configurable_fault() {
-    asm!(
-        "
-        @ Read the current task pointer.
-        ldr r0, =CURRENT_TASK_PTR
-        ldr r0, [r0]
-        mrs r12, PSP
-
-        @ Now, to aid those who will debug what induced this fault, save our
-        @ context.  Some of our context (namely, r0-r3, r12, LR, the return
-        @ address and the xPSR) is already on our stack as part of the fault;
-        @ we'll store our remaining registers, plus the PSP (now in r12), plus
-        @ exc_return (now in LR) into the save region in the current task.
-        @ Note that we explicitly refrain from saving the floating point
-        @ registers here:  touching the floating point registers will induce
-        @ a lazy save on the stack, which is clearly bad news if we have
-        @ overflowed our stack!  We do want to ultimately save them to aid
-        @ debuggability, however, so we pass the address to which they should
-        @ be saved to our fault handler, which will take the necessary
-        @ measures to save them safely.  Finally, note that deferring the
-        @ save to later in handle_fault assumes that the floating point
-        @ registers are not in fact touched before determmining the fault type
-        @ and disabling lazy saving accordingly; should that assumption not
-        @ hold, we will need to be (ironically?) less lazy about disabling
-        @ lazy saving...
-        mov r2, r0
-        stm r2!, {{r4-r7}}
-        mov r4, r8
-        mov r5, r9
-        mov r6, r10
-        mov r7, r11
-        stm r2!, {{r4-r7}}
-        mov r4, r12
-        mov r5, lr
-        stm r2!, {{r4, r5}}
-
-        @ Pull our fault number out of IPSR, allowing for program text to be
-        @ shared across all configurable faults.  (Note that the exception
-        @ number is the bottom 9 bits, but we need only look at the bottom 4
-        @ bits as this handler is only used for exceptions with numbers less
-        @ than 16.)
-        mrs r1, IPSR
-        movs r4, #0xf
-        ands r1, r1, r4
-        bl handle_fault
-
-        @ Our task has changed; reload it.
-        ldr r0, =CURRENT_TASK_PTR
-        ldr r0, [r0]
-
-        @ Restore volatile registers, plus load PSP into r12
-        ldm r0!, {{r4-r7}}
-        push {{r4-r7}}
-        ldm r0!, {{r4-r7}}
-        push {{r4-r7}}
-        ldm r0!, {{r4, r5}}
-        mov lr, r5
-        mov r12, r4
-        pop {{r4-r7}}
-        mov r11, r7
-        mov r10, r6
-        mov r9, r5
-        mov r8, r4
-        pop {{r4-r7}}
-
-        msr PSP, r12
-
-        @ resume
-        bx lr
-        ",
-        options(noreturn),
-    );
 }
 
 #[naked]
@@ -1482,7 +1360,60 @@ pub unsafe extern "C" fn UsageFault() {
 #[naked]
 #[cfg(armv6m)]
 pub unsafe extern "C" fn HardFault() {
-    asm!("b {0}", sym configurable_fault, options(noreturn))
+    asm!(
+        "
+        @ Read the current task pointer.
+        ldr r0, =CURRENT_TASK_PTR
+        ldr r0, [r0]
+        mrs r12, PSP
+
+        @ Now, to aid those who will debug what induced this fault, save our
+        @ context.  Some of our context (namely, r0-r3, r12, LR, the return
+        @ address and the xPSR) is already on our stack as part of the fault;
+        @ we'll store our remaining registers, plus the PSP, plus exc_return
+        @ (now in LR) into the save region in the current task.
+        mov r2, r0
+        stm r2!, {{r4-r7}}
+        mov r4, r8
+        mov r5, r9
+        mov r6, r10
+        mov r7, r11
+        stm r2!, {{r4-r7}}
+        mrs r4, PSP
+        mov r5, lr
+        stm r2!, {{r4, r5}}
+
+        @ armv6m only has one fault, and it's number three.
+        movs r1, #3
+
+        bl handle_fault
+
+        @ Our task has changed; reload it.
+        ldr r0, =CURRENT_TASK_PTR
+        ldr r0, [r0]
+        @ restore volatile registers, plus PSP. We will do this in
+        @ slightly reversed order for efficiency. First, do the high
+        @ ones.
+        movs r1, r0
+        adds r1, r1, #(4 * 4)
+        ldm r1!, {{r4-r7}}
+        mov r11, r7
+        mov r10, r6
+        mov r9, r5
+        mov r8, r4
+        ldm r1!, {{r4, r5}}
+        msr PSP, r4
+        mov lr, r5
+
+        @ Now that we no longer need r4-r7 as temporary registers,
+        @ restore them too.
+        ldm r0!, {{r4-r7}}
+
+        @ resume
+        bx lr
+        ",
+        options(noreturn),
+    );
 }
 
 bitflags::bitflags! {
@@ -1531,8 +1462,6 @@ bitflags::bitflags! {
 #[cfg(armv6m)]
 unsafe extern "C" fn handle_fault(
     task: *mut task::Task,
-    fault_type: FaultType,
-    _fpsave: *mut u32,
 ) {
     // Who faulted?
     let from_thread_mode = (*task).save().exc_return & 0b1000 != 0;
@@ -1545,7 +1474,7 @@ unsafe extern "C" fn handle_fault(
         // fault or a BusFault, respectively).  In that vein, note that we
         // promote our fault type to a u32 to not pull in the Display trait
         // for u8.
-        panic!("Kernel fault {}", (fault_type as u8) as u32);
+        panic!("Kernel fault");
     }
 
     // This is clearly bogus, but until we have the ability to figure out from a single HardFault

@@ -13,6 +13,7 @@ trait AtomicBoolExt {
 #[cfg(armv6m)]
 impl AtomicBoolExt for AtomicBool {
     fn swap(&self, val: bool, order: Ordering) -> bool {
+        // This is correct _only_ because we know we're single threaded.
         let rv = self.load(order);
         self.store(val, order);
         rv

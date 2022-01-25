@@ -2892,6 +2892,8 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "bstringify",
+ "build-util",
+ "cfg-if 0.1.10",
  "num-derive",
  "num-traits",
  "paste",
