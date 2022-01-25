@@ -20,13 +20,19 @@ extern crate panic_halt;
 
 // We have to do this if we don't otherwise use it to ensure its vector table
 // gets linked in.
-extern crate stm32g0;
+extern crate stm32l0;
+use stm32l0::stm32l0x3 as device;
 
 use cortex_m_rt::entry;
 use kern::app::App;
 
 #[entry]
 fn main() -> ! {
+    let rcc = unsafe { &*device::RCC::ptr() };
+    rcc.cr.modify(|_, w| w.hsi16on().set_bit());
+    while !rcc.cr.read().hsi16rdyf().bit() {}
+    rcc.cfgr.modify(|_, w| w.sw().hsi16());
+
     const CYCLES_PER_MS: u32 = 16_000;
 
     unsafe {

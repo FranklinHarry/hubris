@@ -1,13 +1,13 @@
-name = "demo-stm32g070-nucleo"
+name = "demo-stm32l0538-disco"
 target = "thumbv6m-none-eabi"
-board = "stm32g070"
+board = "stm32l0538-disco"
 stacksize = 944
 
 [kernel]
 path = "."
-name = "demo-stm32g0-nucleo"
-requires = {flash = 18304, ram = 1928}
-features = ["g070", "panic-halt"]
+name = "demo-stm32l0538-disco"
+requires = {flash = 11632, ram = 1720}
+features = ["panic-halt"]
 stacksize = 640
 
 [supervisor]
@@ -15,13 +15,13 @@ notification = 1
 
 [outputs.flash]
 address = 0x08000000
-size = 1048576
+size = 65536
 read = true
 execute = true
 
 [outputs.ram]
 address = 0x20000000
-size = 131072
+size = 8192
 read = true
 write = true
 execute = false  # let's assume XN until proven otherwise
@@ -34,33 +34,23 @@ requires = {flash = 4096, ram = 1024}
 start = true
 features = ["log-null"]
 
-[tasks.rcc_driver]
-path = "../../drv/stm32g0-rcc"
-name = "drv-stm32g0-rcc"
-features = ["g070"]
+[tasks.sys]
+path = "../../drv/stm32l0-sys"
+name = "drv-stm32l0-sys"
+features = ["l0x3"]
 priority = 1
-requires = {flash = 1024, ram = 1024}
-uses = ["rcc"]
+requires = {flash = 2048, ram = 1024}
+uses = ["rcc", "gpio"]
 start = true
-
-[tasks.gpio_driver]
-path = "../../drv/stm32g0-gpio"
-name = "drv-stm32g0-gpio"
-features = ["g070"]
-priority = 2
-requires = {flash = 4096, ram = 1024}
-uses = ["gpio"]
-start = true
-task-slots = ["rcc_driver"]
 
 [tasks.user_leds]
 path = "../../drv/user-leds"
 name = "drv-user-leds"
-features = ["stm32g0"]
+features = ["stm32l0"]
 priority = 2
 requires = {flash = 2048, ram = 1024}
 start = true
-task-slots = ["gpio_driver"]
+task-slots = ["sys"]
 
 [tasks.pong]
 path = "../../task/pong"
@@ -85,7 +75,3 @@ size = 1024
 [peripherals.gpio]
 address = 0x50000000
 size = 0x2000
-
-[peripherals.usart1]
-address = 0x40013800
-size = 1024

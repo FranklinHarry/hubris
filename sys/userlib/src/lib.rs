@@ -183,17 +183,15 @@ unsafe extern "C" fn sys_send_stub(_args: &mut SendArgs<'_>) -> RcLen {
                 mov r7, r11
                 push {{r4-r7}}
                 @ Load the constant syscall number.
-                ldr r4, ={sysnum}
+                eors r4, r4
+                adds r4, #{sysnum}
                 mov r11, r4
                 @ Load in args from the struct.
                 ldm r0!, {{r4-r7}}
-                push {{r4-r7}}
-                ldm r0!, {{r4-r6}}
-                mov r8, r4
-                mov r9, r5
-                mov r10, r6
-                pop {{r4-r7}}
-                subs r0, r0, #(7 * 4)
+                ldm r0, {{r0-r2}}
+                mov r8, r0
+                mov r9, r1
+                mov r10, r2
 
                 @ To the kernel!
                 svc #0
@@ -362,14 +360,15 @@ unsafe extern "C" fn sys_recv_stub(
         if #[cfg(armv6m)] {
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
-                push {{r4-r7}}
+                push {{r4-r7, lr}}
                 mov r4, r8
                 mov r5, r9
                 mov r6, r10
                 mov r7, r11
                 push {{r4-r7}}
                 @ Load the constant syscall number.
-                ldr r4, ={sysnum}
+                eors r4, r4
+                adds r4, #{sysnum}
                 mov r11, r4
                 @ Move register arguments into their proper positions.
                 mov r4, r0
@@ -379,11 +378,11 @@ unsafe extern "C" fn sys_recv_stub(
                 @ Read output buffer pointer from stack into a register that
                 @ is preserved during our syscall. Since we just pushed a
                 @ bunch of stuff, we need to read *past* it.
-                ldr r3, [sp, #(8 * 4)]
-
+                ldr r3, [sp, #(9 * 4)]
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Move status flag (only used for closed receive) into return
                 @ position
                 mov r0, r4
@@ -392,17 +391,14 @@ unsafe extern "C" fn sys_recv_stub(
                 mov r5, r8
                 mov r6, r9
                 stm r3!, {{r5-r6}}
-                subs r3, r3, #(5 * 4)
-
+    
                 @ Restore the registers we used.
                 pop {{r4-r7}}
                 mov r8, r4
                 mov r9, r5
                 mov r10, r6
                 mov r11, r7
-                pop {{r4-r7}}
-                @ Fin.
-                bx lr
+                pop {{r4-r7, pc}}
                 ",
                 sysnum = const Sysnum::Recv as u32,
                 options(noreturn),
@@ -422,10 +418,10 @@ unsafe extern "C" fn sys_recv_stub(
                 ldr r3, [sp, #(8 * 4)]
                 @ Load the constant syscall number.
                 mov r11, {sysnum}
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Move status flag (only used for closed receive) into return
                 @ position
                 mov r0, r4
@@ -481,30 +477,29 @@ unsafe extern "C" fn sys_reply_stub(
                 @ Spill the registers we're about to use to pass stuff. Note
                 @ that we're being clever and pushing only the registers we
                 @ need; this means the pop sequence at the end needs to match!
-                push {{lr}}
-                push {{r4-r7}}
+                push {{r4-r7, lr}}
                 mov r4, r11
                 push {{r4}}
-
+    
                 @ Load the constant syscall number.
-                ldr r4, ={sysnum}
+                eors r4, r4
+                adds r4, #{sysnum}
                 mov r11, r4
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
                 mov r6, r2
                 mov r7, r3
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ This call has no results.
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4}}
                 mov r11, r4
-                pop {{r4-r7}}
-                pop {{pc}}
+                pop {{r4-r7, pc}}
                 ",
                 sysnum = const Sysnum::Reply as u32,
                 options(noreturn),
@@ -515,7 +510,7 @@ unsafe extern "C" fn sys_reply_stub(
                 @ that we're being clever and pushing only the registers we
                 @ need; this means the pop sequence at the end needs to match!
                 push {{r4-r7, r11, lr}}
-
+    
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
@@ -523,12 +518,12 @@ unsafe extern "C" fn sys_reply_stub(
                 mov r7, r3
                 @ Load the constant syscall number.
                 mov r11, {sysnum}
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ This call has no results.
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4-r7, r11, pc}}
                 ",
@@ -579,30 +574,29 @@ unsafe extern "C" fn sys_set_timer_stub(
         if #[cfg(armv6m)] {
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
-                push {{lr}}
-                push {{r4-r7}}
+                push {{r4-r7, lr}}
                 mov r4, r11
                 push {{r4}}
-
+    
                 @ Load the constant syscall number.
-                ldr r4, ={sysnum}
+                eors r4, r4
+                adds r4, #{sysnum}
                 mov r11, r4
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
                 mov r6, r2
                 mov r7, r3
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ This call has no results.
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4}}
                 mov r11, r4
-                pop {{r4-r7}}
-                pop {{pc}}
+                pop {{r4-r7, pc}}
                 ",
                 sysnum = const Sysnum::SetTimer as u32,
                 options(noreturn),
@@ -611,7 +605,7 @@ unsafe extern "C" fn sys_set_timer_stub(
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
                 push {{r4-r7, r11, lr}}
-
+    
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
@@ -619,12 +613,12 @@ unsafe extern "C" fn sys_set_timer_stub(
                 mov r7, r3
                 @ Load the constant syscall number.
                 mov r11, {sysnum}
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ This call has no results.
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4-r7, r11, pc}}
                 ",
@@ -663,35 +657,32 @@ unsafe extern "C" fn sys_borrow_read_stub(_args: *mut BorrowReadArgs) -> RcLen {
         if #[cfg(armv6m)] {
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
-                push {{r4-r7}}
+                push {{r4-r7, lr}}
                 mov r4, r8
                 mov r5, r11
                 push {{r4, r5}}
-
+    
                 @ Load the constant syscall number.
-                ldr r4, ={sysnum}
+                eors r4, r4
+                adds r4, #{sysnum}
                 mov r11, r4
                 @ Move register arguments into place.
                 ldm r0!, {{r4-r7}}
-                push {{r4}}
-                ldm r0!, {{r4}}
-                mov r8, r4
-                pop {{r4}}
-                subs r0, r0, #(5 * 4)
-
+                ldm r0, {{r0}}
+                mov r8, r0
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Move the results into place.
                 mov r0, r4
                 mov r1, r5
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4, r5}}
                 mov r11, r5
                 mov r8, r4
-                pop {{r4-r7}}
-                bx lr
+                pop {{r4-r7, pc}}
                 ",
                 sysnum = const Sysnum::BorrowRead as u32,
                 options(noreturn),
@@ -700,19 +691,19 @@ unsafe extern "C" fn sys_borrow_read_stub(_args: *mut BorrowReadArgs) -> RcLen {
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
                 push {{r4-r8, r11}}
-
+    
                 @ Move register arguments into place.
                 ldm r0, {{r4-r8}}
                 @ Load the constant syscall number.
                 mov r11, {sysnum}
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Move the results into place.
                 mov r0, r4
                 mov r1, r5
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4-r8, r11}}
                 bx lr
@@ -763,29 +754,30 @@ unsafe extern "C" fn sys_borrow_write_stub(
         if #[cfg(armv6m)] {
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
-                push {{r4-r7}}
+                push {{r4-r7, lr}}
                 mov r4, r8
                 mov r5, r11
                 push {{r4, r5}}
-
+    
                 @ Load the constant syscall number.
-                ldr r4, ={sysnum}
+                eors r4, r4
+                adds r4, #{sysnum}
                 mov r11, r4
                 @ Move register arguments into place.
-                ldm r0, {{r4-r8}}
-
+                ldm r0!, {{r4-r8}}
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Move the results into place.
                 mov r0, r4
                 mov r1, r5
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4, r5}}
                 mov r11, r5
                 mov r8, r4
-                pop {{r4-r7}}
+                pop {{r4-r7, pc}}
                 bx lr
                 ",
                 sysnum = const Sysnum::BorrowWrite as u32,
@@ -795,19 +787,19 @@ unsafe extern "C" fn sys_borrow_write_stub(
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
                 push {{r4-r8, r11}}
-
+    
                 @ Move register arguments into place.
                 ldm r0, {{r4-r8}}
                 @ Load the constant syscall number.
                 mov r11, {sysnum}
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Move the results into place.
                 mov r0, r4
                 mov r1, r5
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4-r8, r11}}
                 bx lr
@@ -879,29 +871,28 @@ unsafe extern "C" fn sys_borrow_info_stub(
         if #[cfg(armv6m)] {
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
-                push {{r4-r6}}
+                push {{r4-r6, lr}}
                 mov r4, r11
                 push {{r4}}
-
+    
                 @ Load the constant syscall number.
-                ldr r4, ={sysnum}
+                eors r4, r4
+                adds r4, #{sysnum}
                 mov r11, r4
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Move the results into place.
                 stm r2!, {{r4-r6}}
-                subs r2, r2, #(3 * 4)
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4}}
                 mov r11, r4
-                pop {{r4-r6}}
-                bx lr
+                pop {{r4-r6, pc}}
                 ",
                 sysnum = const Sysnum::BorrowInfo as u32,
                 options(noreturn),
@@ -910,19 +901,19 @@ unsafe extern "C" fn sys_borrow_info_stub(
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
                 push {{r4-r6, r11}}
-
+    
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
                 @ Load the constant syscall number.
                 mov r11, {sysnum}
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Move the results into place.
                 stm r2, {{r4-r6}}
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4-r6, r11}}
                 bx lr
@@ -952,28 +943,27 @@ unsafe extern "C" fn sys_irq_control_stub(_mask: u32, _enable: u32) {
         if #[cfg(armv6m)] {
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
-                push {{lr}}
-                push {{r4, r5}}
+                push {{r4, r5, lr}}
                 mov r4, r11
                 push {{r4}}
-
+    
                 @ Load the constant syscall number.
-                ldr r4, ={sysnum}
+                eors r4, r4
+                adds r4, #{sysnum}
                 mov r11, r4
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ This call returns no results.
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4}}
                 mov r11, r4
-                pop {{r4, r5}}
-                pop {{pc}}
+                pop {{r4, r5, pc}}
                 ",
                 sysnum = const Sysnum::IrqControl as u32,
                 options(noreturn),
@@ -982,18 +972,18 @@ unsafe extern "C" fn sys_irq_control_stub(_mask: u32, _enable: u32) {
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
                 push {{r4, r5, r11, lr}}
-
+    
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
                 @ Load the constant syscall number.
                 mov r11, {sysnum}
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ This call returns no results.
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4, r5, r11, pc}}
                 ",
@@ -1022,23 +1012,21 @@ unsafe extern "C" fn sys_panic_stub(_msg: *const u8, _len: usize) -> ! {
                 @ We're not going to return, so technically speaking we don't
                 @ need to save registers. However, we save them anyway, so that
                 @ we can reconstruct the state that led to the panic.
-                push {{lr}}
-                push {{r4, r5}}
+                push {{r4, r5, lr}}
                 mov r4, r11
                 push {{r4}}
-
+    
                 @ Load the constant syscall number.
-                ldr r4, ={sysnum}
+                eors r4, r4
+                adds r4, #{sysnum}
                 mov r11, r4
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
-
+    
                 @ To the kernel!
                 svc #0
-
-                @ This really shouldn't return. Ensure this:
-                udf #0xad
+                @ noreturn generates a udf to trap us if it returns.
                 ",
                 sysnum = const Sysnum::Panic as u32,
                 options(noreturn),
@@ -1049,18 +1037,16 @@ unsafe extern "C" fn sys_panic_stub(_msg: *const u8, _len: usize) -> ! {
                 @ need to save registers. However, we save them anyway, so that
                 @ we can reconstruct the state that led to the panic.
                 push {{r4, r5, r11, lr}}
-
+    
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
                 @ Load the constant syscall number.
                 mov r11, {sysnum}
-
+    
                 @ To the kernel!
                 svc #0
-
-                @ This really shouldn't return. Ensure this:
-                udf #0xad
+                @ noreturn generates a udf to trap us if it returns.
                 ",
                 sysnum = const Sysnum::Panic as u32,
                 options(noreturn),
@@ -1117,12 +1103,12 @@ pub struct TimerState {
 
 #[repr(C)] // loaded from assembly, field order must not change
 struct RawTimerState {
-    now_lo: u32,
-    now_hi: u32,
-    set: u32,
-    dl_lo: u32,
-    dl_hi: u32,
-    on_dl: u32,
+now_lo: u32,
+now_hi: u32,
+set: u32,
+dl_lo: u32,
+dl_hi: u32,
+on_dl: u32,
 }
 
 /// Core implementation of the GET_TIMER syscall.
@@ -1134,34 +1120,32 @@ unsafe extern "C" fn sys_get_timer_stub(_out: *mut RawTimerState) {
         if #[cfg(armv6m)] {
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
-                push {{r4-r7}}
+                push {{r4-r7, lr}}
                 mov r4, r8
                 mov r5, r9
                 mov r6, r10
                 mov r7, r11
                 push {{r4-r7}}
                 @ Load the constant syscall number.
-                ldr r4, ={sysnum}
+                eors r4, r4
+                adds r4, #{sysnum}
                 mov r11, r4
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Write all the results out into the raw output buffer.
                 stm r0!, {{r4-r7}}
                 mov r4, r8
                 mov r5, r9
                 stm r0!, {{r4, r5}}
-                subs r0, r0, #(6 * 4)
                 @ Restore the registers we used.
                 pop {{r4-r7}}
                 mov r11, r7
                 mov r10, r6
                 mov r9, r5
                 mov r8, r4
-                pop {{r4-r7}}
-                @ Fin.
-                bx lr
+                pop {{r4-r7, pc}}
                 ",
                 sysnum = const Sysnum::GetTimer as u32,
                 options(noreturn),
@@ -1172,10 +1156,10 @@ unsafe extern "C" fn sys_get_timer_stub(_out: *mut RawTimerState) {
                 push {{r4-r11}}
                 @ Load the constant syscall number.
                 mov r11, {sysnum}
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Write all the results out into the raw output buffer.
                 stm r0, {{r4-r9}}
                 @ Restore the registers we used.
@@ -1210,47 +1194,44 @@ pub unsafe extern "C" fn _start() -> ! {
                 @ Copy data initialization image into data section.
                 @ Note: this assumes that both source and destination are 32-bit
                 @ aligned and padded to 4-byte boundary.
-
+    
                 ldr r0, =__edata            @ upper bound in r0
                 ldr r1, =__sidata           @ source in r1
                 ldr r2, =__sdata            @ dest in r2
-
+    
                 b 1f                        @ check for zero-sized data
-
-            2:  ldr r3, [r1]                @ read and advance source
-                adds r1, r1, #4
-                str r3, [r2]                @ write and advance dest
-                adds r2, r2, #4
-
+    
+            2:  ldm r1!, {{r3}}             @ read and advance source
+                stm r2!, {{r3}}             @ write and advance dest
+    
             1:  cmp r2, r0                  @ has dest reached the upper bound?
                 bne 2b                      @ if not, repeat
-
+    
                 @ Zero BSS section.
-
+    
                 ldr r0, =__ebss             @ upper bound in r0
                 ldr r1, =__sbss             @ base in r1
-
+    
                 movs r2, #0                 @ materialize a zero
-
+    
                 b 1f                        @ check for zero-sized BSS
-
-            2:  str r2, [r1]                @ zero one word and advance
-                adds r1, r1, #4
-
+    
+            2:  stm r1!, {{r2}}             @ zero one word and advance
+    
             1:  cmp r1, r0                  @ has base reached bound?
                 bne 2b                      @ if not, repeat
-
+    
                 @ Be extra careful to ensure that those side effects are
                 @ visible to the user program.
-
+    
                 dsb         @ complete all writes
                 isb         @ and flush the pipeline
-
+    
                 @ Now, to the user entry point. We call it in case it
                 @ returns. (It's not supposed to.) We reference it through
                 @ a sym operand because it's a Rust func and may be mangled.
                 bl {main}
-
+    
                 @ The noreturn option below will automatically generate an
                 @ undefined instruction trap past this point, should main
                 @ return.
@@ -1263,52 +1244,52 @@ pub unsafe extern "C" fn _start() -> ! {
                 @ Copy data initialization image into data section.
                 @ Note: this assumes that both source and destination are 32-bit
                 @ aligned and padded to 4-byte boundary.
-
+    
                 movw r0, #:lower16:__edata  @ upper bound in r0
                 movt r0, #:upper16:__edata
-
+    
                 movw r1, #:lower16:__sidata @ source in r1
                 movt r1, #:upper16:__sidata
-
+    
                 movw r2, #:lower16:__sdata  @ dest in r2
                 movt r2, #:upper16:__sdata
-
+    
                 b 1f                        @ check for zero-sized data
-
+    
             2:  ldr r3, [r1], #4            @ read and advance source
                 str r3, [r2], #4            @ write and advance dest
-
+    
             1:  cmp r2, r0                  @ has dest reached the upper bound?
                 bne 2b                      @ if not, repeat
-
+    
                 @ Zero BSS section.
-
+    
                 movw r0, #:lower16:__ebss   @ upper bound in r0
                 movt r0, #:upper16:__ebss
-
+    
                 movw r1, #:lower16:__sbss   @ base in r1
                 movt r1, #:upper16:__sbss
-
+    
                 movs r2, #0                 @ materialize a zero
-
+    
                 b 1f                        @ check for zero-sized BSS
-
+    
             2:  str r2, [r1], #4            @ zero one word and advance
-
+    
             1:  cmp r1, r0                  @ has base reached bound?
                 bne 2b                      @ if not, repeat
-
+    
                 @ Be extra careful to ensure that those side effects are
                 @ visible to the user program.
-
+    
                 dsb         @ complete all writes
                 isb         @ and flush the pipeline
-
+    
                 @ Now, to the user entry point. We call it in case it
                 @ returns. (It's not supposed to.) We reference it through
                 @ a sym operand because it's a Rust func and may be mangled.
                 bl {main}
-
+    
                 @ The noreturn option below will automatically generate an
                 @ undefined instruction trap past this point, should main
                 @ return.
@@ -1325,78 +1306,78 @@ pub unsafe extern "C" fn _start() -> ! {
 #[cfg(feature = "panic-messages")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    use core::fmt::Write;
+use core::fmt::Write;
 
-    // This is the "we want panic messages" panic handler. It is written in a
-    // slightly tortured fashion, but for good reason. The goals here are:
-    //
-    // 1. Put the panic message _somewhere._
-    // 2. Don't permanently reserve the RAM for that "somewhere" in all tasks at
-    //    all times.
-    // 3. Don't panic recursively. This is very important.
-    //
-    // We need to set aside RAM to achieve #1, but per #2 it isn't a static.
-    // Instead, we allocate a BUFSIZE-byte buffer on the panicking task's stack.
-    // This is not _ideal_ as it runs the risk of turning a panic into a stack
-    // overflow (TODO).
-    const BUFSIZE: usize = 128;
+// This is the "we want panic messages" panic handler. It is written in a
+// slightly tortured fashion, but for good reason. The goals here are:
+//
+// 1. Put the panic message _somewhere._
+// 2. Don't permanently reserve the RAM for that "somewhere" in all tasks at
+//    all times.
+// 3. Don't panic recursively. This is very important.
+//
+// We need to set aside RAM to achieve #1, but per #2 it isn't a static.
+// Instead, we allocate a BUFSIZE-byte buffer on the panicking task's stack.
+// This is not _ideal_ as it runs the risk of turning a panic into a stack
+// overflow (TODO).
+const BUFSIZE: usize = 128;
 
-    // If the panic message is longer than BUFSIZE, we'll throw away remaining
-    // bytes. So we need to implement `core::fmt::Write` (how panic messages get
-    // generated) in a way that will only record a maximum-length _prefix_ of
-    // the output.
-    //
-    // To do that we have this custom type:
-    struct PrefixWrite([u8; BUFSIZE], usize);
+// If the panic message is longer than BUFSIZE, we'll throw away remaining
+// bytes. So we need to implement `core::fmt::Write` (how panic messages get
+// generated) in a way that will only record a maximum-length _prefix_ of
+// the output.
+//
+// To do that we have this custom type:
+struct PrefixWrite([u8; BUFSIZE], usize);
 
-    impl Write for PrefixWrite {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            if self.1 < self.0.len() {
-                let (_, remaining) = self.0.split_at_mut(self.1);
-                let strbytes = s.as_bytes();
-                let to_write = remaining.len().min(strbytes.len());
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        strbytes.as_ptr(),
-                        remaining.as_mut_ptr(),
-                        to_write,
-                    );
-                }
-                // Wrapping add here because (1) we're confident that adding
-                // to_write won't cause wrap because of our `min` above, and (2)
-                // we want to avoid writing code that implies an integer
-                // overflow check.
-                self.1 = self.1.wrapping_add(to_write);
+impl Write for PrefixWrite {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        if self.1 < self.0.len() {
+            let (_, remaining) = self.0.split_at_mut(self.1);
+            let strbytes = s.as_bytes();
+            let to_write = remaining.len().min(strbytes.len());
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    strbytes.as_ptr(),
+                    remaining.as_mut_ptr(),
+                    to_write,
+                );
             }
-            Ok(())
+            // Wrapping add here because (1) we're confident that adding
+            // to_write won't cause wrap because of our `min` above, and (2)
+            // we want to avoid writing code that implies an integer
+            // overflow check.
+            self.1 = self.1.wrapping_add(to_write);
         }
+        Ok(())
     }
+}
 
-    // Okay. Now we start the actual panicking process. Allocate buffer:
-    let mut pw = PrefixWrite([0; BUFSIZE], 0);
-    // Generate message:
-    write!(pw, "{}", info).ok();
-    // Pass it to kernel. We are using split-at rather than `&pw.0[..pw.1]`
-    // because the latter generates more checks that can lead to a recursive
-    // panic.
-    sys_panic(if pw.1 < pw.0.len() {
-        pw.0.split_at(pw.1).0
-    } else {
-        // Try the first BUFSIZE bytes then.
-        &pw.0
-    });
+// Okay. Now we start the actual panicking process. Allocate buffer:
+let mut pw = PrefixWrite([0; BUFSIZE], 0);
+// Generate message:
+write!(pw, "{}", info).ok();
+// Pass it to kernel. We are using split-at rather than `&pw.0[..pw.1]`
+// because the latter generates more checks that can lead to a recursive
+// panic.
+sys_panic(if pw.1 < pw.0.len() {
+    pw.0.split_at(pw.1).0
+} else {
+    // Try the first BUFSIZE bytes then.
+    &pw.0
+});
 }
 
 #[cfg(not(feature = "panic-messages"))]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    sys_panic(b"PANIC")
+sys_panic(b"PANIC")
 }
 
 #[inline(always)]
 pub fn sys_refresh_task_id(task_id: TaskId) -> TaskId {
-    let tid = unsafe { sys_refresh_task_id_stub(task_id.0 as u32) };
-    TaskId(tid as u16)
+let tid = unsafe { sys_refresh_task_id_stub(task_id.0 as u32) };
+TaskId(tid as u16)
 }
 
 /// Core implementation of the REFRESH_TASK_ID syscall.
@@ -1409,29 +1390,28 @@ unsafe extern "C" fn sys_refresh_task_id_stub(_tid: u32) -> u32 {
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
                 @ match!
-                push {{lr}}
-                push {{r4, r5}}
+                push {{r4, r5, lr}}
                 mov r4, r11
                 push {{r4}}
-
+    
                 @ Load the constant syscall number.
-                ldr r4, ={sysnum}
+                movs r4, #0
+                adds r4, #{sysnum}
                 mov r11, r4
-
+    
                 @ Move register arguments into place.
                 mov r4, r0
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Move result into place.
                 mov r0, r4
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4}}
                 mov r11, r4
-                pop {{r4, r5}}
-                pop {{pc}}
+                pop {{r4, r5, pc}}
                 ",
                 sysnum = const Sysnum::RefreshTaskId as u32,
                 options(noreturn),
@@ -1440,18 +1420,18 @@ unsafe extern "C" fn sys_refresh_task_id_stub(_tid: u32) -> u32 {
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
                 push {{r4, r5, r11, lr}}
-
+    
                 @ Move register arguments into place.
                 mov r4, r0
                 @ Load the constant syscall number.
                 mov r11, {sysnum}
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Move result into place.
                 mov r0, r4
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4, r5, r11, pc}}
                 ",
@@ -1466,7 +1446,7 @@ unsafe extern "C" fn sys_refresh_task_id_stub(_tid: u32) -> u32 {
 
 #[inline(always)]
 pub fn sys_post(task_id: TaskId, bits: u32) -> u32 {
-    unsafe { sys_post_stub(task_id.0 as u32, bits) }
+unsafe { sys_post_stub(task_id.0 as u32, bits) }
 }
 
 /// Core implementation of the POST syscall.
@@ -1481,22 +1461,22 @@ unsafe extern "C" fn sys_post_stub(_tid: u32, _mask: u32) -> u32 {
                 push {{r4, r5, lr}}
                 mov r4, r11
                 push {{r4}}
-
+    
                 @ Load the constant syscall number.
                 movs r4, #0
                 adds r4, #{sysnum}
                 mov r11, r4
-
+    
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Move result into place.
                 mov r0, r4
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4}}
                 mov r11, r4
@@ -1509,19 +1489,19 @@ unsafe extern "C" fn sys_post_stub(_tid: u32, _mask: u32) -> u32 {
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
                 push {{r4, r5, r11, lr}}
-
+    
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
                 @ Load the constant syscall number.
                 mov r11, {sysnum}
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ Move result into place.
                 mov r0, r4
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4, r5, r11, pc}}
                 ",
@@ -1536,7 +1516,7 @@ unsafe extern "C" fn sys_post_stub(_tid: u32, _mask: u32) -> u32 {
 
 #[inline(always)]
 pub fn sys_reply_fault(task_id: TaskId, reason: ReplyFaultReason) {
-    unsafe { sys_reply_fault_stub(task_id.0 as u32, reason as u32) }
+unsafe { sys_reply_fault_stub(task_id.0 as u32, reason as u32) }
 }
 
 /// Core implementation of the REPLY_FAULT syscall.
@@ -1551,7 +1531,7 @@ unsafe extern "C" fn sys_reply_fault_stub(_tid: u32, _reason: u32) {
                 push {{r4, r5, lr}}
                 mov r4, r11
                 push {{r4}}
-
+    
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
@@ -1559,12 +1539,12 @@ unsafe extern "C" fn sys_reply_fault_stub(_tid: u32, _reason: u32) {
                 movs r4, #0
                 adds r4, #{sysnum}
                 mov r11, r4
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ This syscall has no results.
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4}}
                 mov r11, r4
@@ -1577,18 +1557,18 @@ unsafe extern "C" fn sys_reply_fault_stub(_tid: u32, _reason: u32) {
             asm!("
                 @ Spill the registers we're about to use to pass stuff.
                 push {{r4, r5, r11, lr}}
-
+    
                 @ Move register arguments into place.
                 mov r4, r0
                 mov r5, r1
                 @ Load the constant syscall number.
                 mov r11, {sysnum}
-
+    
                 @ To the kernel!
                 svc #0
-
+    
                 @ This syscall has no results.
-
+    
                 @ Restore the registers we used and return.
                 pop {{r4, r5, r11, pc}}
                 ",
