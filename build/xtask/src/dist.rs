@@ -404,10 +404,11 @@ pub fn package(
     )?;
     let kconfig = ron::ser::to_string(&kconfig)?;
 
+    let kstacksize = toml.kernel.stacksize.unwrap_or(DEFAULT_KERNEL_STACK);
     generate_kernel_linker_script(
         "memory.x",
         &allocs.kernel,
-        toml.kernel.stacksize.unwrap_or(DEFAULT_KERNEL_STACK),
+        kstacksize,
     )?;
 
     // this one was for the tasks, but we don't want to use it for the kernel
@@ -431,7 +432,27 @@ pub fn package(
         &toml.config,
         &[("HUBRIS_KCONFIG", &kconfig)],
     )?;
-    let (kentry, _) = load_elf(&out.join("kernel"), &mut all_output_sections)?;
+    let (kentry, (kflash, kram)) = load_elf(&out.join("kernel"), &mut all_output_sections)?;
+    let mut kcomplaints = vec![];
+    if kflash != 0 {
+        if let Some(d) = toml.kernel.requires["flash"].checked_sub(kflash as u32) {
+            if d != 0 {
+                kcomplaints.push(format!("- flash should be {} (-{})",
+                    kflash, d));
+            }
+        }
+    }
+
+    let kram = kram + kstacksize as usize;
+    if kram != 0 {
+        if let Some(d) = toml.kernel.requires["ram"].checked_sub(kram as u32) {
+            if d != 0 {
+                kcomplaints.push(format!("- ram should be {} (-{})",
+                kram, d));
+            }
+
+        }
+    }
 
     // Write a map file, because that seems nice.
     let mut mapfile = File::create(&out.join("map.txt"))?;
@@ -647,6 +668,10 @@ pub fn package(
             println!("task {}:", task);
             for c in complaints { println!("{}", c) }
         }
+    }
+    if !kcomplaints.is_empty() {
+        println!("kernel:");
+        for c in kcomplaints { println!("{}", c) }
     }
 
     Ok(())
@@ -1678,9 +1703,8 @@ fn load_elf(
 
         if phdr.p_flags & PF_W != 0 {
             ram += phdr.p_memsz as usize;
-        } else {
-            flash += size;
         }
+        flash += size;
 
         // Check for address overlap
         let range = addr..addr + size as u32;
