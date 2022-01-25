@@ -481,6 +481,7 @@ dependencies = [
  "panic-halt",
  "panic-itm",
  "panic-semihosting",
+ "ringbuf",
  "stm32g0",
 ]
 

@@ -33,7 +33,14 @@ macro_rules! sys_log {
     };
 }
 
-#[cfg(not(any(feature = "log-semihosting", feature = "log-itm")))]
+#[cfg(feature = "log-null")]
+#[macro_export]
+macro_rules! sys_log {
+    ($s:expr) => {};
+    ($s:expr, $($tt:tt)*) => {};
+}
+
+#[cfg(not(any(feature = "log-semihosting", feature = "log-itm", feature = "log-null")))]
 #[macro_export]
 macro_rules! sys_log {
     ($s:expr) => {

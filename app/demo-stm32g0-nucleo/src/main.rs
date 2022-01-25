@@ -5,9 +5,9 @@
 #![no_std]
 #![no_main]
 
-#[cfg(not(any(feature = "panic-itm", feature = "panic-semihosting")))]
+#[cfg(not(any(feature = "panic-itm", feature = "panic-semihosting", feature = "panic-halt")))]
 compile_error!(
-    "Must have either feature panic-itm or panic-semihosting enabled"
+    "Must have one of panic-{itm,semihosting,halt} enabled"
 );
 
 // Panic behavior controlled by Cargo features:
@@ -15,6 +15,8 @@ compile_error!(
 extern crate panic_itm; // breakpoint on `rust_begin_unwind` to catch panics
 #[cfg(feature = "panic-semihosting")]
 extern crate panic_semihosting; // requires a debugger
+#[cfg(feature = "panic-halt")]
+extern crate panic_halt;
 
 // We have to do this if we don't otherwise use it to ensure its vector table
 // gets linked in.

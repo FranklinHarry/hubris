@@ -6,7 +6,8 @@ version = "0.1.0"
 
 [features]
 itm = ["panic-itm", "kern/klog-itm"]
-semihosting = ["panic-semihosting", "kern/klog-semihosting"]
+semihosting = ["panic-semihosting", "klog-semihosting"]
+klog-semihosting = ["kern/klog-semihosting"]
 g031 = ["stm32g0/stm32g031"]
 g070 = ["stm32g0/stm32g070"]
 g0b1 = ["stm32g0/stm32g0b1"]
@@ -19,6 +20,7 @@ panic-halt = { version = "0.2.0", optional = true }
 panic-semihosting = { version = "0.5.3", optional = true }
 cfg-if = "0.1.10"
 stm32g0 = { git = "https://github.com/oxidecomputer/stm32-rs-nightlies", branch = "stm32g0b1-initial-support", default-features = false, features = ["rt"] }
+ringbuf = {path = "../../lib/ringbuf", features = ["disabled"]}
 
 [dependencies.kern]
 path = "../../sys/kern"
